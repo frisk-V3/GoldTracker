@@ -5,17 +5,17 @@ namespace GoldMonitorService
     public class Worker : BackgroundService
     {
         private readonly ILogger<Worker> _logger;
-        private readonly HttpClient _httpClient = new HttpClient();
-        
+        private static readonly HttpClient _httpClient = new HttpClient();
+
         // --- 設定 ---
-        private const string ApiKey = "YOUR_API_KEY";
+        private const string ApiKey = "YOUR_API_KEY"; // ← ここだけ自分のキーに置き換える
         private const string RawCsv = "gold_raw_history.csv"; // 全記録
         private const string StudyJson = "study_result.json";  // 3日間の学習成果
         private const double IntervalMinutes = 14.5;
-        
+
         private readonly DateTime _startTime;
         private readonly DateTime _studyEndTime;
-        
+
         private List<double> _studyPrices = new(); // 3日間の価格を貯める
 
         public Worker(ILogger<Worker> logger)
@@ -39,7 +39,7 @@ namespace GoldMonitorService
                     // 1. APIから取得
                     var (price, ask, bid) = await GetGoldPriceAsync();
 
-                    // 2. CSVへは「常に」記録し続ける（証拠を残す）
+                    // 2. CSVへは「常に」記録し続ける
                     string line = $"{DateTime.Now:yyyy/MM/dd HH:mm:ss},{price},{ask},{bid}";
                     await File.AppendAllTextAsync(RawCsv, line + "\n", stoppingToken);
 
@@ -49,11 +49,10 @@ namespace GoldMonitorService
                         _studyPrices.Add(price);
                         _logger.LogInformation($"[学習中] 3日間完了まであと {(int)(_studyEndTime - DateTime.Now).TotalHours}時間");
                     }
-                    else if (_studyPrices.Count > 0)
+                    else if (!File.Exists(StudyJson) && _studyPrices.Count > 0)
                     {
-                        // 3日間経過した瞬間に一度だけJSONで成果を出力
+                        // 3日間経過後に一度だけ JSON 出力
                         await SaveStudyResultAsync();
-                        _studyPrices.Clear(); // 二度書きしないようにクリア
                     }
 
                     _logger.LogInformation($"記録完了: {price}円");
@@ -84,18 +83,31 @@ namespace GoldMonitorService
             var options = new JsonSerializerOptions { WriteIndented = true };
             string json = JsonSerializer.Serialize(result, options);
             await File.WriteAllTextAsync(StudyJson, json);
+
             _logger.LogInformation("【学習完了】成果を JSON に書き出しました。");
         }
 
         private async Task<(double price, double ask, double bid)> GetGoldPriceAsync()
         {
-            var request = new HttpRequestMessage(HttpMethod.Get, "https://goldapi.io");
+            // 正しい GoldAPI のエンドポイント
+            var request = new HttpRequestMessage(HttpMethod.Get, "https://www.goldapi.io/api/XAU/JPY");
             request.Headers.Add("x-access-token", ApiKey);
+            request.Headers.Add("Content-Type", "application/json");
+
             var res = await _httpClient.SendAsync(request);
+
+            if (!res.IsSuccessStatusCode)
+                throw new Exception($"API Error: {res.StatusCode}");
+
             var json = await res.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
             var r = doc.RootElement;
-            return (r.GetProperty("price").GetDouble(), r.GetProperty("ask").GetDouble(), r.GetProperty("bid").GetDouble());
+
+            return (
+                r.GetProperty("price").GetDouble(),
+                r.GetProperty("ask").GetDouble(),
+                r.GetProperty("bid").GetDouble()
+            );
         }
     }
 }
